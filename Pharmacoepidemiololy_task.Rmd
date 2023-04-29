@@ -1,0 +1,207 @@
+---
+title: "Pharmacoepidemiology task"
+author: "Paraskevi Tassopoulou"
+date: "16.01.2023"
+output: html_document
+---
+
+
+### Setting up the session
+
+
+```{r, message=FALSE}
+# Load the packages
+library(data.table)
+library(lubridate)
+library(readxl)
+library(stringr)
+
+# Set the seed for the session
+addTaskCallback(function(...) {set.seed(123);TRUE})
+size_sample = 1000
+
+# Create the example data
+stamm <- data.table(PID = c(1:size_sample),
+                    sex = sample(c(1,2), replace=TRUE, size=size_sample),
+                    birth_qtr = sample(seq(as.Date('1950-01-01'), as.Date('2019-12-31'), by="quarter"), replace=TRUE, size = size_sample))
+
+ins_int <-  data.table(PID = c(1:size_sample),
+                       ins_start = sample(seq(as.Date('2015-01-01'), as.Date('2019-12-31'), by="year"), replace=TRUE, size = size_sample),
+                       ins_end = sample(c(30,60,365,730), replace=TRUE, size = size_sample)
+)
+ins_int[,ins_end:=ins_start %m+% days(ins_end)]
+
+medication <-  data.table(PID = sample(1:size_sample, replace=TRUE, size=4500),
+                          prescription_dt = sample(seq(as.Date('2015-01-01'), as.Date('2020-12-31'), by="day"), replace=TRUE, size = 4500),
+                          ATC_Code = sample(c("C07BB02", "A10BK01", "C07FX05","C01EB17","H02AB09",
+                                              "H02AB10","H02AB11","H02AB12","H02AB13","H02AB14",
+                                              "H02AB15","H02AB17","J01AA02","J01AA03","J01AA04",
+                                              "J01AA05", "A10BA02"), replace=TRUE, size = 4500)
+)
+
+```
+### Start of the session
+
+
+> *Part 1: Demographics*
+
+#### 1. Calculate age at 2020-01-01. 
+
+```{r}
+# Convert birth_qtr to date format
+stamm[, birth_qtr := as.Date(birth_qtr, format = "%Y-%m-%d")]
+	
+# Substract the birth_qtr from 2020-01-01, and divide by 365.25 to get the number of years
+stamm[, age_at_2020 := as.numeric(as.Date("2020-01-01") - birth_qtr)/ 365.25]
+
+```
+
+#### 2. Add a variable with age group (in steps of 10 between 0 and 90 years old: 0 - 9, 10 - 19, 20 - 29 etc..).
+
+I use the cut() function tp create groups in steps between 0-90 years. I use seq() function to create the vector of the breaks. 
+
+Note: The 'stamm' data table does not contain any patients over 70. However, in my opinion, the complete answer to that question is to also include the 90. So, I created an extra '90+' group. I assign a label '90+' to any ages greater than 90 and add Inf to the breaks to make sure all >90 ages will be included.
+
+```{r}
+stamm[, age_group := cut(age_at_2020, breaks = c(seq(0, 90, by = 10), Inf), labels = c(paste(seq(0, 80, by = 10), seq(9, 89, by = 10), sep = "-"), "90+"))]
+
+head(stamm)
+```
+#### 3. Create an overview of how many unique PIDs per age group are available. Ordered by age group.
+
+I use the uniqueN() funtion to count the number of unique PIDs per age group and then I order by age group.
+```{r}
+stamm[, uniqueN(PID), by = age_group][order(age_group)]
+```
+#### 4. Create an overview of how many unique PIDs per age group and sex are available. 
+
+Same rationale here.
+```{r}
+stamm[, uniqueN(PID),by =c("age_group","sex")][order(age_group, sex)]
+```
+> *Part 2: Insurance*
+
+#### 5. Check which patients were fully insured in 2020 (01.01.2020-31.12.2020). Add a corresponding variable in the stamm data. Hint: create a flag (binary) variable per PID indicating whether they fulfill the requirement.
+
+First, I create a new data.table called 'ins_int_2020' that contains the patients who were fully insured in 2020.
+```{r}
+ins_int_2020 <- ins_int[ins_start <= as.Date("2020-01-01") & ins_end >= as.Date("2020-12-31")]
+head(ins_int_2020)
+```
+
+Then, I create a new variable called 'fully_insured_2020' in the 'stamm' which assigns a value of 1 to the rows that match the 'PID' between 'stamm' and 'ins_int_2020' tables, and 0 to the rows that don't match.
+```{r}
+stamm[ins_int_2020, fully_insured_2020 := 1, on = .(PID)]
+stamm[is.na(fully_insured_2020), fully_insured_2020 := 0]
+head(stamm)
+```
+
+> *Part 3: Medication*
+
+#### 6. We only have exact dates of medication prescription, create a new variable that corresponds to the first day of the quarter per prescription date.
+
+I create a new variable called 'quarter_start' in the 'medication' table and assign a date that corresponds to the first day of the quarter of the 'prescription_dt' variable. I use the floor_date() function from lubridate, which rounds down the date to the nearest specified unit (in our case is quarter).
+```{r}
+medication[, quarter_start := as.Date(floor_date(prescription_dt, unit = "quarter"))]
+head(medication)
+```
+#### 7. Join the datasets stamm and medication together for those patients who were fully insured in 2020.
+
+I join the two data tables on the PID variable and then I keep only the rows where the fully_insured variable equals 1.
+
+Note: *nomatch argument is set to 0 which means that when there is no match in the join, the joined table will contain only the rows with a match.
+
+```{r}
+# join the tables on PID
+stamm_med_2020 <- stamm[medication, nomatch = 0, on = 'PID']
+
+# subset the fully insured patients
+stamm_med_2020 <- stamm_med_2020[fully_insured_2020 == 1]
+```
+
+#### 8. Find the number of insured PIDs with ATC codes that start with C07
+
+I filter the rows with grepl() function to check if the values in the ATC_Code column start with the string 'C07', I define the 'Count' column that I'd like to include in the output (we want to include only the unique PIDs) and I group the results by the 'fully_insured_2020' variable.
+```{r}
+#
+stamm_med_2020[grepl("^C07", ATC_Code) , .(Count = uniqueN(PID)), by = fully_insured_2020]
+```
+#### 9. Join the joined stamm and medication with the external excel reference --> notice you may need to load another package! Make sure you do not lose any PIDs in this process!
+
+```{r}
+# Load a package to read the external .xls
+library(readxl)
+
+# Read the .xls file - assign the empty cells to NA 
+reference_data <- read_excel("~/Downloads/reference.xlsx", na = "")
+
+# Convert to data table 
+setDT(reference_data)
+```
+
+I process the reference_data before the join, to standardise the format of both columns.
+```{r}
+# Remove leading and trailing whitespaces from both columns before the join.
+library(stringr)
+stamm_med_2020[, ATC_Code := str_trim(ATC_Code)]
+reference_data[, code := str_trim(code)]
+
+# Make sure every character is upper case
+stamm_med_2020[, ATC_Code := str_to_upper(ATC_Code)]
+reference_data[, code := str_to_upper(code)]
+
+# Check for missing values and remove them accordinlgy
+sum(is.na(stamm_med_2020$ATC_Code))
+sum(is.na(reference_data$code))
+
+reference_data <- reference_data[!is.na(reference_data$code),]
+
+# Check for consistent data types
+class(stamm_med_2020$ATC_Code)
+class(reference_data$code)
+
+# Check for formatting inconsistencies
+sum(startsWith(stamm_med_2020$ATC_Code, "0"))
+sum(startsWith(reference_data$code, "0"))
+
+# Check for different levels of granularity
+nchar(stamm_med_2020$ATC_Code)
+nchar(reference_data$code)
+```
+
+Finally, I join the two tables. This time, for a change, I use the merge() function from the data.table package. all.x=TRUE is used to keep all the rows from left table even if there is no match in the right table (this is practically a left join).
+```{r}
+merged_data <- merge(stamm_med_2020, reference_data, by.x = "ATC_Code", by.y = "code", all.x = TRUE)
+
+# Double checking if I lost any PIDs
+uniqueN(stamm_med_2020, "PID") == uniqueN(merged_data, "PID")
+```
+
+#### 10. Create a final table with an overview of the number of insured PIDs per medication description. (Note that some PIDs do not have any medication, they should be listed as having "None")
+
+For the final table, I subset the merged_data table based on the 'fully_insured_2020 variable' (has to be 1), I use the uniqueN() function to count the unique PIDs per medication description and, finally, I use the is.na() function to identify any rows with missing values in the description variable and replace them with "None".
+
+```{r}
+final_table <- merged_data[fully_insured_2020 == 1][, .(count = uniqueN(PID)), by = c("description")]
+final_table[is.na(description), description := "None"]
+print(final_table)
+```
+#### 11. Add percentage to the table based on the total number inclusion PIDs.
+
+I calculate the total number of insured PIDs by summing up the count column of the final_table, then add a new column to the final_table, named 'percentage', which calculates the percentage of insured PIDs per medication description by dividing each count by the total number of insured PIDs and multiplying the result by 100. 
+	
+```{r}
+total_insured_pid <- sum(final_table[,count])
+final_table[, percentage := (count / total_insured_pid) * 100]
+
+print(final_table)
+```
+
+
+
+
+
+
+
+
+
